@@ -1,12 +1,17 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+import task
+import wallet
 
 router = Router(name="ads")
 
 BTN_ADVERTISE_TEXT = "Рекламировать"
-CURRENCY = "SP"
+CURRENCY = wallet.CURRENCY
 
-# Подписи и минимальные суммы за задание по типам (в SP)
 TASK_TYPE_LABELS = {
     "channel": "📢 Канал",
     "group": "👥 Группа",
@@ -16,8 +21,8 @@ TASK_TYPE_LABELS = {
     "advanced": "⚙️ Расширенное задание",
 }
 
-# Минимальная сумма вознаграждения за одно выполнение задания.
-# Для "reactions" точная цифра не была указана — временно поставил 500 SP
+# Минимальная сумма вознаграждения за одно выполнение (в SP).
+# Для "reactions" точная цифра не была указана — временно поставил 500
 # (на уровне просмотра поста), поправь при необходимости.
 MIN_AMOUNTS = {
     "channel": 1000,
@@ -37,14 +42,22 @@ TASK_TYPE_DESCRIPTIONS = {
     "advanced": "Вы сами описываете, что именно должен сделать пользователь.",
 }
 
+# Для этих типов уже реализован полный сбор данных (ссылка/сумма/кол-во).
+# Остальные (bot/post/reactions/advanced) пока показывают только заглушку.
+CONFIGURABLE_TYPES = {"channel", "group"}
 
-def get_user_balance(user_id: int) -> int:
-    """Заглушка. Здесь будет запрос реального баланса пользователя из БД."""
-    return 0
+QUANTITY_OPTIONS = [5, 10, 25, 50, 125, 250]
+
+
+class CreateTaskStates(StatesGroup):
+    waiting_link = State()
+    waiting_amount = State()
+    waiting_quantity = State()
+    waiting_custom_quantity = State()
 
 
 def ads_main_text(user_id: int) -> str:
-    balance = get_user_balance(user_id)
+    balance = wallet.get_balance(user_id)
     return (
         "📣 <b>Рекламировать</b>\n\n"
         "Продвигайте свои каналы, группы, ботов и посты руками других "
@@ -98,25 +111,100 @@ def ads_create_type_text(task_type: str) -> str:
         f"{label}\n\n"
         f"{description}\n\n"
         f"Минимальная сумма за выполнение: <b>{min_amount} {CURRENCY}</b>\n\n"
-        "Заглушка: дальше будет ввод ссылки/данных и суммы вознаграждения."
+        "Заглушка: этот тип задания пока в разработке."
     )
 
 
 def ads_create_type_kb() -> InlineKeyboardMarkup:
-    keyboard = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="ads:create")]]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="ads:create")]])
+
+
+def parse_chat_ref(text: str) -> str | None:
+    """Достаёт @username из ссылки/юзернейма. Инвайт-ссылки на приватные
+    чаты (t.me/+hash или t.me/joinchat/...) пока не поддерживаются — бот
+    не может их разрешить, не будучи уже добавленным в чат."""
+    text = text.strip()
+    if not text:
+        return None
+    if "t.me/" in text:
+        tail = text.split("t.me/")[-1].split("?")[0].split("/")[0]
+        if not tail or tail.startswith("+") or tail.lower() == "joinchat":
+            return None
+        return f"@{tail}"
+    if text.startswith("@"):
+        return text
+    return f"@{text}"
+
+
+def affordable_options(balance: int, amount: int) -> list[int]:
+    return [q for q in QUANTITY_OPTIONS if amount * q <= balance]
+
+
+def quantity_kb(balance: int, amount: int) -> InlineKeyboardMarkup:
+    options = affordable_options(balance, amount)
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for qty in options:
+        row.append(InlineKeyboardButton(text=str(qty), callback_data=f"ads:qty:{qty}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="ads:qty:custom")])
+    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="ads:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def finalize_task(user_id: int, quantity: int, state: FSMContext) -> tuple[bool, str]:
+    """Создаёт задание, списывает баланс. Возвращает (успех, текст для юзера)."""
+    data = await state.get_data()
+    task_type = data["task_type"]
+    amount = data["amount"]
+    chat_id = data.get("chat_id")
+    chat_title = data.get("chat_title", "")
+
+    total_cost = amount * quantity
+    if not wallet.subtract_balance(user_id, total_cost):
+        balance = wallet.get_balance(user_id)
+        return False, (
+            f"Недостаточно баланса: нужно {total_cost} {CURRENCY}, "
+            f"у вас {balance} {CURRENCY}. Введите меньшее количество."
+        )
+
+    label = TASK_TYPE_LABELS[task_type]
+    title = f"{label}: {chat_title}"
+
+    task.add_task(
+        type_=task_type,
+        title=title,
+        reward=amount,
+        quantity=quantity,
+        creator_id=user_id,
+        chat_id=chat_id,
+    )
+
+    await state.clear()
+
+    text = (
+        "✅ Задание создано и опубликовано в разделе «Задания»!\n\n"
+        f"{title}\n"
+        f"Награда: {amount} {CURRENCY} за выполнение\n"
+        f"Количество: {quantity}\n"
+        f"Списано: {total_cost} {CURRENCY}\n"
+        f"Остаток баланса: {wallet.get_balance(user_id)} {CURRENCY}"
+    )
+    return True, text
 
 
 @router.message(F.text == BTN_ADVERTISE_TEXT)
 async def open_ads_menu(message: Message):
-    await message.answer(
-        ads_main_text(message.from_user.id),
-        reply_markup=ads_main_kb(),
-    )
+    await message.answer(ads_main_text(message.from_user.id), reply_markup=ads_main_kb())
 
 
 @router.callback_query(F.data == "ads:create")
-async def ads_create(callback: CallbackQuery):
+async def ads_create(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(ads_create_text(), reply_markup=ads_create_kb())
     await callback.answer()
 
@@ -132,19 +220,172 @@ async def ads_stats(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "ads:back")
-async def ads_back(callback: CallbackQuery):
-    await callback.message.edit_text(
-        ads_main_text(callback.from_user.id),
-        reply_markup=ads_main_kb(),
-    )
+async def ads_back(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(ads_main_text(callback.from_user.id), reply_markup=ads_main_kb())
     await callback.answer()
+
+
+@router.callback_query(F.data == "ads:cancel")
+async def ads_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(ads_main_text(callback.from_user.id), reply_markup=ads_main_kb())
+    await callback.answer("Отменено.")
 
 
 @router.callback_query(F.data.startswith("ads:create:"))
-async def ads_create_type(callback: CallbackQuery):
+async def ads_create_type(callback: CallbackQuery, state: FSMContext):
     task_type = callback.data.split(":")[-1]
-    await callback.message.edit_text(
-        ads_create_type_text(task_type),
-        reply_markup=ads_create_type_kb(),
-    )
+
+    if task_type in CONFIGURABLE_TYPES:
+        await state.set_state(CreateTaskStates.waiting_link)
+        await state.update_data(task_type=task_type)
+        label = TASK_TYPE_LABELS[task_type]
+        await callback.message.edit_text(
+            f"{label}\n\n"
+            "Отправьте ссылку или юзернейм (@username или https://t.me/username).\n\n"
+            "⚠️ Бот должен быть добавлен туда администратором — иначе он не "
+            "сможет проверять подписки/вступления.\n\n"
+            "Для отмены нажмите /cancel."
+        )
+        await callback.answer()
+        return
+
+    # Остальные типы (bot/post/reactions/advanced) пока без сбора данных.
+    await callback.message.edit_text(ads_create_type_text(task_type), reply_markup=ads_create_type_kb())
     await callback.answer()
+
+
+@router.message(
+    F.text == "/cancel",
+    StateFilter(
+        CreateTaskStates.waiting_link,
+        CreateTaskStates.waiting_amount,
+        CreateTaskStates.waiting_custom_quantity,
+    ),
+)
+async def cancel_creation(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Создание задания отменено.", reply_markup=ads_main_kb())
+
+
+@router.message(CreateTaskStates.waiting_link)
+async def process_link(message: Message, state: FSMContext, bot: Bot):
+    chat_ref = parse_chat_ref(message.text or "")
+    if not chat_ref:
+        await message.answer(
+            "Не получилось распознать ссылку. Отправьте юзернейм (@username) "
+            "или публичную ссылку вида https://t.me/username.\n"
+            "Приватные инвайт-ссылки (t.me/+...) пока не поддерживаются."
+        )
+        return
+
+    try:
+        chat = await bot.get_chat(chat_ref)
+    except Exception:
+        await message.answer(
+            "Не удалось найти такой канал/группу. Проверьте ссылку и "
+            "отправьте её ещё раз."
+        )
+        return
+
+    try:
+        member = await bot.get_chat_member(chat.id, bot.id)
+    except Exception:
+        member = None
+
+    if not member or member.status not in ("administrator", "creator"):
+        await message.answer(
+            "Бот должен быть администратором в этом канале/группе, чтобы "
+            "проверять выполнение задания. Добавьте бота в админы и "
+            "отправьте ссылку ещё раз."
+        )
+        return
+
+    data = await state.get_data()
+    task_type = data["task_type"]
+    min_amount = MIN_AMOUNTS[task_type]
+
+    await state.update_data(chat_id=chat.id, chat_title=chat.title or chat_ref)
+    await state.set_state(CreateTaskStates.waiting_amount)
+
+    await message.answer(
+        f"Отлично, бот — админ в «{chat.title or chat_ref}».\n\n"
+        f"Теперь укажите сумму оплаты за одно выполнение "
+        f"(минимум {min_amount} {CURRENCY}):"
+    )
+
+
+@router.message(CreateTaskStates.waiting_amount)
+async def process_amount(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_type = data["task_type"]
+    min_amount = MIN_AMOUNTS[task_type]
+
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer(f"Введите число — сумму в {CURRENCY} (минимум {min_amount}).")
+        return
+
+    amount = int(text)
+    if amount < min_amount:
+        await message.answer(f"Сумма меньше минимальной. Введите не менее {min_amount} {CURRENCY}.")
+        return
+
+    balance = wallet.get_balance(message.from_user.id)
+    await state.update_data(amount=amount)
+    await state.set_state(CreateTaskStates.waiting_quantity)
+
+    if not affordable_options(balance, amount):
+        await message.answer(
+            f"Сумма за одно выполнение: {amount} {CURRENCY}.\n"
+            f"Ваш баланс: {balance} {CURRENCY}.\n\n"
+            f"Баланса не хватает даже на {QUANTITY_OPTIONS[0]} выполнений. "
+            "Введите количество вручную (столько, сколько позволяет баланс):",
+            reply_markup=quantity_kb(balance, amount),
+        )
+        return
+
+    await message.answer(
+        f"Сумма за одно выполнение: {amount} {CURRENCY}.\n"
+        f"Ваш баланс: {balance} {CURRENCY}.\n\n"
+        "Сколько выполнений нужно?",
+        reply_markup=quantity_kb(balance, amount),
+    )
+
+
+@router.callback_query(CreateTaskStates.waiting_quantity, F.data.startswith("ads:qty:"))
+async def process_quantity_choice(callback: CallbackQuery, state: FSMContext):
+    value = callback.data.split(":")[-1]
+
+    if value == "custom":
+        await state.set_state(CreateTaskStates.waiting_custom_quantity)
+        await callback.message.edit_text("Введите количество выполнений числом:")
+        await callback.answer()
+        return
+
+    quantity = int(value)
+    ok, text = await finalize_task(callback.from_user.id, quantity, state)
+    if ok:
+        await callback.message.edit_text(text, reply_markup=ads_main_kb())
+    else:
+        data = await state.get_data()
+        amount = data["amount"]
+        balance = wallet.get_balance(callback.from_user.id)
+        await callback.message.edit_text(text, reply_markup=quantity_kb(balance, amount))
+    await callback.answer()
+
+
+@router.message(CreateTaskStates.waiting_custom_quantity)
+async def process_custom_quantity(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("Введите положительное целое число.")
+        return
+
+    quantity = int(text)
+    ok, result_text = await finalize_task(message.from_user.id, quantity, state)
+    if ok:
+        await message.answer(result_text, reply_markup=ads_main_kb())
+    else:
+        await message.answer(result_text)
