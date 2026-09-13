@@ -8,6 +8,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 import ads
+import task
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,6 +17,7 @@ BOT_TOKEN = "8841055640:AAE65cYHaE9XVEo2fQLwZ5kPxrR1Fncqm5Q"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 dp.include_router(ads.router)
+dp.include_router(task.router)
 
 # --- Тексты кнопок (используем как константы, чтобы не дублировать строки) ---
 BTN_TASKS = "Задания"
@@ -79,9 +81,7 @@ async def cmd_start(message: Message):
     )
 
 
-@dp.message(F.text == BTN_TASKS)
-async def handle_tasks(message: Message):
-    await message.answer("Раздел «Задания» в разработке (заглушка).")
+# Обработка кнопки "Задания" теперь в task.py (router task.router)
 
 
 @dp.message(F.text == BTN_PROFILE)
