@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 import ads
@@ -15,7 +16,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "8841055640:AAE65cYHaE9XVEo2fQLwZ5kPxrR1Fncqm5Q"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+# MemoryStorage — состояния диалога (FSM) хранятся в памяти процесса.
+# Нужен для сценария создания задания в ads.py (ссылка -> сумма -> кол-во).
+dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(ads.router)
 dp.include_router(task.router)
 
