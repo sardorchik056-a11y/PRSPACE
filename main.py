@@ -22,17 +22,18 @@ BTN_ADVERTISE = "Рекламировать"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Главное reply-меню.
-
-    Примечание: Telegram Bot API не поддерживает цветовую стилизацию
-    (primary/secondary и т.п.) для ReplyKeyboardMarkup — цвет кнопки
-    определяется темой клиента, а не ботом. Здесь просто текстовые кнопки.
-    """
+    """Главное reply-меню. Все кнопки — синий стиль (style="primary")."""
     keyboard = [
-        [KeyboardButton(text=BTN_TASKS), KeyboardButton(text=BTN_PROFILE)],
-        [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_LEADERS)],
-        [KeyboardButton(text=BTN_INFO)],
-        [KeyboardButton(text=BTN_ADVERTISE)],
+        [
+            KeyboardButton(text=BTN_TASKS, style="primary"),
+            KeyboardButton(text=BTN_PROFILE, style="primary"),
+        ],
+        [
+            KeyboardButton(text=BTN_STATS, style="primary"),
+            KeyboardButton(text=BTN_LEADERS, style="primary"),
+        ],
+        [KeyboardButton(text=BTN_INFO, style="primary")],
+        [KeyboardButton(text=BTN_ADVERTISE, style="primary")],
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
