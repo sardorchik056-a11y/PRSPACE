@@ -1,5 +1,4 @@
 from aiogram import Router, F, Bot
-from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -48,12 +47,21 @@ CONFIGURABLE_TYPES = {"channel", "group"}
 
 QUANTITY_OPTIONS = [5, 10, 25, 50, 125, 250]
 
+CANCEL_TEXT = "✖️ Отменить"
+CANCEL_CALLBACK = "ads:cancel"
+
 
 class CreateTaskStates(StatesGroup):
     waiting_link = State()
     waiting_amount = State()
     waiting_quantity = State()
     waiting_custom_quantity = State()
+
+
+def cancel_kb() -> InlineKeyboardMarkup:
+    """Клавиатура с одной кнопкой отмены — используется на каждом шаге
+    создания задания, где бот ждёт текстовый ввод."""
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=CANCEL_TEXT, callback_data=CANCEL_CALLBACK)]])
 
 
 def ads_main_text(user_id: int) -> str:
@@ -152,7 +160,7 @@ def quantity_kb(balance: int, amount: int) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="ads:qty:custom")])
-    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="ads:cancel")])
+    rows.append([InlineKeyboardButton(text=CANCEL_TEXT, callback_data=CANCEL_CALLBACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -168,9 +176,11 @@ async def finalize_task(user_id: int, quantity: int, state: FSMContext) -> tuple
     total_cost = amount * quantity
     if not wallet.subtract_balance(user_id, total_cost):
         balance = wallet.get_balance(user_id)
+        await state.clear()
         return False, (
             f"Недостаточно баланса: нужно {total_cost} {CURRENCY}, "
-            f"у вас {balance} {CURRENCY}. Введите меньшее количество."
+            f"у вас {balance} {CURRENCY}.\n"
+            "Создание задания отменено. Начните заново через «Создать задание»."
         )
 
     label = TASK_TYPE_LABELS[task_type]
@@ -228,7 +238,7 @@ async def ads_back(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data == "ads:cancel")
+@router.callback_query(F.data == CANCEL_CALLBACK)
 async def ads_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(ads_main_text(callback.from_user.id), reply_markup=ads_main_kb())
@@ -247,8 +257,8 @@ async def ads_create_type(callback: CallbackQuery, state: FSMContext):
             f"{label}\n\n"
             "Отправьте ссылку или юзернейм (@username или https://t.me/username).\n\n"
             "⚠️ Бот должен быть добавлен туда администратором — иначе он не "
-            "сможет проверять подписки/вступления.\n\n"
-            "Для отмены нажмите /cancel."
+            "сможет проверять подписки/вступления.",
+            reply_markup=cancel_kb(),
         )
         await callback.answer()
         return
@@ -258,36 +268,28 @@ async def ads_create_type(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(
-    F.text == "/cancel",
-    StateFilter(
-        CreateTaskStates.waiting_link,
-        CreateTaskStates.waiting_amount,
-        CreateTaskStates.waiting_custom_quantity,
-    ),
-)
-async def cancel_creation(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Создание задания отменено.", reply_markup=ads_main_kb())
-
-
 @router.message(CreateTaskStates.waiting_link)
 async def process_link(message: Message, state: FSMContext, bot: Bot):
+    # Ждём ссылку только один раз: любая ошибка сразу отменяет создание
+    # задания вместо повторного запроса.
     chat_ref = parse_chat_ref(message.text or "")
     if not chat_ref:
+        await state.clear()
         await message.answer(
-            "Не получилось распознать ссылку. Отправьте юзернейм (@username) "
-            "или публичную ссылку вида https://t.me/username.\n"
-            "Приватные инвайт-ссылки (t.me/+...) пока не поддерживаются."
+            "Это не похоже на ссылку или юзернейм канала/группы.\n"
+            "Создание задания отменено. Начните заново через «Создать задание».",
+            reply_markup=ads_main_kb(),
         )
         return
 
     try:
         chat = await bot.get_chat(chat_ref)
     except Exception:
+        await state.clear()
         await message.answer(
-            "Не удалось найти такой канал/группу. Проверьте ссылку и "
-            "отправьте её ещё раз."
+            "Не удалось найти такой канал/группу.\n"
+            "Создание задания отменено. Начните заново через «Создать задание».",
+            reply_markup=ads_main_kb(),
         )
         return
 
@@ -297,10 +299,12 @@ async def process_link(message: Message, state: FSMContext, bot: Bot):
         member = None
 
     if not member or member.status not in ("administrator", "creator"):
+        await state.clear()
         await message.answer(
-            "Бот должен быть администратором в этом канале/группе, чтобы "
-            "проверять выполнение задания. Добавьте бота в админы и "
-            "отправьте ссылку ещё раз."
+            "Бот не является администратором этого канала/группы.\n"
+            "Добавьте бота в админы и создайте задание заново через "
+            "«Создать задание».",
+            reply_markup=ads_main_kb(),
         )
         return
 
@@ -315,26 +319,29 @@ async def process_link(message: Message, state: FSMContext, bot: Bot):
     await message.answer(
         f"Отлично, бот — админ в «{chat.title or chat_ref}».\n\n"
         f"Теперь укажите сумму оплаты за одно выполнение "
-        f"(минимум {min_amount} {CURRENCY}):"
+        f"(минимум {min_amount} {CURRENCY}):",
+        reply_markup=cancel_kb(),
     )
 
 
 @router.message(CreateTaskStates.waiting_amount)
 async def process_amount(message: Message, state: FSMContext):
+    # Ждём сумму только один раз: ошибка сразу отменяет создание задания.
     data = await state.get_data()
     task_type = data["task_type"]
     min_amount = MIN_AMOUNTS[task_type]
 
     text = (message.text or "").strip()
-    if not text.isdigit():
-        await message.answer(f"Введите число — сумму в {CURRENCY} (минимум {min_amount}).")
+    if not text.isdigit() or int(text) < min_amount:
+        await state.clear()
+        await message.answer(
+            f"Нужно было ввести число не меньше {min_amount} {CURRENCY}.\n"
+            "Создание задания отменено. Начните заново через «Создать задание».",
+            reply_markup=ads_main_kb(),
+        )
         return
 
     amount = int(text)
-    if amount < min_amount:
-        await message.answer(f"Сумма меньше минимальной. Введите не менее {min_amount} {CURRENCY}.")
-        return
-
     balance = wallet.get_balance(message.from_user.id)
     await state.update_data(amount=amount)
     await state.set_state(CreateTaskStates.waiting_quantity)
@@ -363,32 +370,33 @@ async def process_quantity_choice(callback: CallbackQuery, state: FSMContext):
 
     if value == "custom":
         await state.set_state(CreateTaskStates.waiting_custom_quantity)
-        await callback.message.edit_text("Введите количество выполнений числом:")
+        await callback.message.edit_text(
+            "Введите количество выполнений числом:",
+            reply_markup=cancel_kb(),
+        )
         await callback.answer()
         return
 
     quantity = int(value)
     ok, text = await finalize_task(callback.from_user.id, quantity, state)
-    if ok:
-        await callback.message.edit_text(text, reply_markup=ads_main_kb())
-    else:
-        data = await state.get_data()
-        amount = data["amount"]
-        balance = wallet.get_balance(callback.from_user.id)
-        await callback.message.edit_text(text, reply_markup=quantity_kb(balance, amount))
+    kb = ads_main_kb()
+    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
 @router.message(CreateTaskStates.waiting_custom_quantity)
 async def process_custom_quantity(message: Message, state: FSMContext):
+    # Ждём число только один раз: ошибка сразу отменяет создание задания.
     text = (message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
-        await message.answer("Введите положительное целое число.")
+        await state.clear()
+        await message.answer(
+            "Нужно было ввести положительное целое число.\n"
+            "Создание задания отменено. Начните заново через «Создать задание».",
+            reply_markup=ads_main_kb(),
+        )
         return
 
     quantity = int(text)
     ok, result_text = await finalize_task(message.from_user.id, quantity, state)
-    if ok:
-        await message.answer(result_text, reply_markup=ads_main_kb())
-    else:
-        await message.answer(result_text)
+    await message.answer(result_text, reply_markup=ads_main_kb())
