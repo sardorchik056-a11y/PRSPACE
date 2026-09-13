@@ -27,7 +27,7 @@ _id_counter = itertools.count(1)
 VERIFIABLE_TYPES = {"channel", "group"}
 
 
-def add_task(*, type_: str, title: str, reward: int, quantity: int, creator_id: int, chat_id: int | None = None) -> dict:
+def add_task(*, type_: str, title: str, reward: int, quantity: int, creator_id: int, chat_id: int | None = None, link: str | None = None) -> dict:
     new_task = {
         "id": next(_id_counter),
         "type": type_,
@@ -37,6 +37,7 @@ def add_task(*, type_: str, title: str, reward: int, quantity: int, creator_id: 
         "remaining": quantity,
         "creator_id": creator_id,
         "chat_id": chat_id,
+        "link": link,
         "completed_by": set(),
     }
     TASKS.append(new_task)
@@ -87,20 +88,24 @@ def tasks_list_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
 
 def task_details_text(t: dict) -> str:
     left = t["quantity"] - t["remaining"]
+    link_line = f"\nСсылка: {t['link']}\n" if t.get("link") else "\n"
     return (
         f"📄 <b>{t['title']}</b>\n\n"
         f"Награда: <b>{t['reward']} {CURRENCY}</b>\n"
-        f"Выполнено: {left}/{t['quantity']}\n\n"
+        f"Выполнено: {left}/{t['quantity']}"
+        f"{link_line}\n"
         "Нажмите «Я выполнил», когда подпишетесь/вступите — бот проверит "
         "это автоматически."
     )
 
 
 def task_details_kb(t: dict) -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton(text="✅ Я выполнил", callback_data=f"task:complete:{t['id']}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="task:refresh")],
-    ]
+    keyboard = []
+    if t.get("link"):
+        join_label = "🔗 Подписаться" if t["type"] == "channel" else "🔗 Вступить"
+        keyboard.append([InlineKeyboardButton(text=join_label, url=t["link"])])
+    keyboard.append([InlineKeyboardButton(text="✅ Я выполнил", callback_data=f"task:complete:{t['id']}")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="task:refresh")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
