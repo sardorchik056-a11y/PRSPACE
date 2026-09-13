@@ -22,18 +22,46 @@ BTN_ADVERTISE = "Рекламировать"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Главное reply-меню. Все кнопки — синий стиль (style="primary")."""
+    """Главное reply-меню. Синий стиль (primary) + кастомные emoji."""
     keyboard = [
         [
-            KeyboardButton(text=BTN_TASKS, style="primary"),
-            KeyboardButton(text=BTN_PROFILE, style="primary"),
+            KeyboardButton(
+                text=BTN_TASKS,
+                style="primary",
+                icon_custom_emoji_id="5310273663281417659",
+            ),
+            KeyboardButton(
+                text=BTN_PROFILE,
+                style="primary",
+                icon_custom_emoji_id="5452085950022707790",
+            ),
         ],
         [
-            KeyboardButton(text=BTN_STATS, style="primary"),
-            KeyboardButton(text=BTN_LEADERS, style="primary"),
+            KeyboardButton(
+                text=BTN_STATS,
+                style="primary",
+                icon_custom_emoji_id="5203993413346680064",
+            ),
+            KeyboardButton(
+                text=BTN_LEADERS,
+                style="primary",
+                icon_custom_emoji_id="5244590801438138696",
+            ),
         ],
-        [KeyboardButton(text=BTN_INFO, style="primary")],
-        [KeyboardButton(text=BTN_ADVERTISE, style="primary")],
+        [
+            KeyboardButton(
+                text=BTN_INFO,
+                style="primary",
+                icon_custom_emoji_id="6100614423896918505",
+            )
+        ],
+        [
+            KeyboardButton(
+                text=BTN_ADVERTISE,
+                style="primary",
+                icon_custom_emoji_id="5424818078833715060",
+            )
+        ],
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
