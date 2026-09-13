@@ -4,8 +4,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 router = Router(name="ads")
 
 BTN_ADVERTISE_TEXT = "Рекламировать"
+CURRENCY = "SP"
 
-# Подписи типов заданий (используются и в клавиатуре, и в заглушках)
+# Подписи и минимальные суммы за задание по типам (в SP)
 TASK_TYPE_LABELS = {
     "channel": "📢 Канал",
     "group": "👥 Группа",
@@ -13,6 +14,27 @@ TASK_TYPE_LABELS = {
     "bot": "🤖 Бот",
     "reactions": "😀 Реакции",
     "advanced": "⚙️ Расширенное задание",
+}
+
+# Минимальная сумма вознаграждения за одно выполнение задания.
+# Для "reactions" точная цифра не была указана — временно поставил 500 SP
+# (на уровне просмотра поста), поправь при необходимости.
+MIN_AMOUNTS = {
+    "channel": 1000,
+    "group": 1000,
+    "bot": 2500,
+    "post": 500,
+    "reactions": 500,
+    "advanced": 5000,
+}
+
+TASK_TYPE_DESCRIPTIONS = {
+    "channel": "Пользователь подписывается на указанный канал.",
+    "group": "Пользователь вступает в указанную группу.",
+    "post": "Пользователь просматривает указанный пост.",
+    "bot": "Пользователь запускает указанного бота (/start).",
+    "reactions": "Пользователь ставит реакцию на указанный пост.",
+    "advanced": "Вы сами описываете, что именно должен сделать пользователь.",
 }
 
 
@@ -26,9 +48,9 @@ def ads_main_text(user_id: int) -> str:
     return (
         "📣 <b>Рекламировать</b>\n\n"
         "Продвигайте свои каналы, группы, ботов и посты руками других "
-        "пользователей: они выполняют ваши задания, а вы платите монетами "
-        "только за реально выполненные действия.\n\n"
-        f"💰 Баланс: <b>{balance}</b> монет\n\n"
+        "пользователей: они выполняют ваши задания, а вы платите "
+        f"{CURRENCY} только за реально выполненные действия.\n\n"
+        f"💰 Баланс: <b>{balance} {CURRENCY}</b>\n\n"
         "Выберите действие:"
     )
 
@@ -40,6 +62,13 @@ def ads_main_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📊 Статистика", callback_data="ads:stats")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def ads_create_text() -> str:
+    lines = ["📝 <b>Создание задания</b>", "", "Выберите тип задания:", ""]
+    for key, label in TASK_TYPE_LABELS.items():
+        lines.append(f"{label} — от {MIN_AMOUNTS[key]} {CURRENCY}")
+    return "\n".join(lines)
 
 
 def ads_create_kb() -> InlineKeyboardMarkup:
@@ -61,6 +90,23 @@ def ads_create_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def ads_create_type_text(task_type: str) -> str:
+    label = TASK_TYPE_LABELS.get(task_type, task_type)
+    min_amount = MIN_AMOUNTS.get(task_type, 0)
+    description = TASK_TYPE_DESCRIPTIONS.get(task_type, "")
+    return (
+        f"{label}\n\n"
+        f"{description}\n\n"
+        f"Минимальная сумма за выполнение: <b>{min_amount} {CURRENCY}</b>\n\n"
+        "Заглушка: дальше будет ввод ссылки/данных и суммы вознаграждения."
+    )
+
+
+def ads_create_type_kb() -> InlineKeyboardMarkup:
+    keyboard = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="ads:create")]]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 @router.message(F.text == BTN_ADVERTISE_TEXT)
 async def open_ads_menu(message: Message):
     await message.answer(
@@ -71,10 +117,7 @@ async def open_ads_menu(message: Message):
 
 @router.callback_query(F.data == "ads:create")
 async def ads_create(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "📝 <b>Создание задания</b>\n\nВыберите тип задания:",
-        reply_markup=ads_create_kb(),
-    )
+    await callback.message.edit_text(ads_create_text(), reply_markup=ads_create_kb())
     await callback.answer()
 
 
@@ -100,5 +143,8 @@ async def ads_back(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("ads:create:"))
 async def ads_create_type(callback: CallbackQuery):
     task_type = callback.data.split(":")[-1]
-    label = TASK_TYPE_LABELS.get(task_type, task_type)
-    await callback.answer(f"«{label}» — заглушка, в разработке.", show_alert=True)
+    await callback.message.edit_text(
+        ads_create_type_text(task_type),
+        reply_markup=ads_create_type_kb(),
+    )
+    await callback.answer()
