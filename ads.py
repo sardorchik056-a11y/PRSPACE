@@ -163,6 +163,7 @@ async def finalize_task(user_id: int, quantity: int, state: FSMContext) -> tuple
     amount = data["amount"]
     chat_id = data.get("chat_id")
     chat_title = data.get("chat_title", "")
+    chat_link = data.get("chat_link")
 
     total_cost = amount * quantity
     if not wallet.subtract_balance(user_id, total_cost):
@@ -182,6 +183,7 @@ async def finalize_task(user_id: int, quantity: int, state: FSMContext) -> tuple
         quantity=quantity,
         creator_id=user_id,
         chat_id=chat_id,
+        link=chat_link,
     )
 
     await state.clear()
@@ -306,7 +308,8 @@ async def process_link(message: Message, state: FSMContext, bot: Bot):
     task_type = data["task_type"]
     min_amount = MIN_AMOUNTS[task_type]
 
-    await state.update_data(chat_id=chat.id, chat_title=chat.title or chat_ref)
+    chat_link = f"https://t.me/{chat.username}" if chat.username else None
+    await state.update_data(chat_id=chat.id, chat_title=chat.title or chat_ref, chat_link=chat_link)
     await state.set_state(CreateTaskStates.waiting_amount)
 
     await message.answer(
