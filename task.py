@@ -1,21 +1,57 @@
-from aiogram import Router, F
+import itertools
+
+from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+import wallet
 
 router = Router(name="tasks")
 
 BTN_TASKS_TEXT = "Задания"
-CURRENCY = "SP"
+CURRENCY = wallet.CURRENCY
 
-# Временное хранилище заданий в памяти (пока нет БД).
-# Каждое задание создаётся рекламодателем в разделе "Рекламировать" (ads.py)
-# и должно появляться в этом списке. Пока список пуст — реальное создание
-# заданий там ещё не реализовано (заглушка).
-# Структура записи: {"id": int, "type": str, "title": str, "reward": int}
+# Хранилище заданий в памяти (пока нет БД).
+# Задания создаются рекламодателем в ads.py через add_task().
+# Структура записи:
+# {
+#   "id": int, "type": str, "title": str, "reward": int,
+#   "quantity": int, "remaining": int, "creator_id": int,
+#   "chat_id": int | None, "completed_by": set[int],
+# }
 TASKS: list[dict] = []
+
+_id_counter = itertools.count(1)
+
+# Типы заданий, для которых уже реализована реальная проверка выполнения
+# (проверка подписки/членства через бота-админа в чате).
+VERIFIABLE_TYPES = {"channel", "group"}
+
+
+def add_task(*, type_: str, title: str, reward: int, quantity: int, creator_id: int, chat_id: int | None = None) -> dict:
+    new_task = {
+        "id": next(_id_counter),
+        "type": type_,
+        "title": title,
+        "reward": reward,
+        "quantity": quantity,
+        "remaining": quantity,
+        "creator_id": creator_id,
+        "chat_id": chat_id,
+        "completed_by": set(),
+    }
+    TASKS.append(new_task)
+    return new_task
+
+
+def remove_task(task_id: int) -> None:
+    TASKS[:] = [t for t in TASKS if t["id"] != task_id]
+
+
+def find_task(task_id: str) -> dict | None:
+    return next((t for t in TASKS if str(t["id"]) == task_id), None)
 
 
 def get_active_tasks() -> list[dict]:
-    """Заглушка. В будущем — выборка активных заданий из БД."""
     return TASKS
 
 
@@ -39,34 +75,33 @@ def tasks_list_kb(tasks: list[dict]) -> InlineKeyboardMarkup:
     keyboard = [
         [
             InlineKeyboardButton(
-                text=f"{task['title']} — {task['reward']} {CURRENCY}",
-                callback_data=f"task:open:{task['id']}",
+                text=f"{t['title']} — {t['reward']} {CURRENCY}",
+                callback_data=f"task:open:{t['id']}",
             )
         ]
-        for task in tasks
+        for t in tasks
     ]
     keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="task:refresh")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def task_details_text(task: dict) -> str:
+def task_details_text(t: dict) -> str:
+    left = t["quantity"] - t["remaining"]
     return (
-        f"📄 <b>{task['title']}</b>\n\n"
-        f"Награда: <b>{task['reward']} {CURRENCY}</b>\n\n"
-        "Заглушка: здесь будет описание задания и проверка его выполнения."
+        f"📄 <b>{t['title']}</b>\n\n"
+        f"Награда: <b>{t['reward']} {CURRENCY}</b>\n"
+        f"Выполнено: {left}/{t['quantity']}\n\n"
+        "Нажмите «Я выполнил», когда подпишетесь/вступите — бот проверит "
+        "это автоматически."
     )
 
 
-def task_details_kb(task: dict) -> InlineKeyboardMarkup:
+def task_details_kb(t: dict) -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton(text="✅ Я выполнил", callback_data=f"task:complete:{task['id']}")],
+        [InlineKeyboardButton(text="✅ Я выполнил", callback_data=f"task:complete:{t['id']}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="task:refresh")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def find_task(task_id: str) -> dict | None:
-    return next((t for t in TASKS if str(t["id"]) == task_id), None)
 
 
 @router.message(F.text == BTN_TASKS_TEXT)
@@ -85,25 +120,63 @@ async def refresh_tasks(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("task:open:"))
 async def open_task(callback: CallbackQuery):
     task_id = callback.data.split(":")[-1]
-    task = find_task(task_id)
-    if not task:
+    t = find_task(task_id)
+    if not t:
         await callback.answer("Задание больше недоступно.", show_alert=True)
         return
-    await callback.message.edit_text(task_details_text(task), reply_markup=task_details_kb(task))
+    await callback.message.edit_text(task_details_text(t), reply_markup=task_details_kb(t))
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("task:complete:"))
-async def complete_task(callback: CallbackQuery):
+async def complete_task(callback: CallbackQuery, bot: Bot):
     task_id = callback.data.split(":")[-1]
-    task = find_task(task_id)
-    if not task:
+    t = find_task(task_id)
+    if not t:
         await callback.answer("Задание больше недоступно.", show_alert=True)
         return
-    # Заглушка: здесь будет реальная проверка выполнения (подписка/просмотр/
-    # реакция и т.д.) и начисление task["reward"] SP на баланс пользователя
-    # через БД (см. get_user_balance в ads.py — потребуется set/add-функция).
-    await callback.answer(
-        f"Заглушка: после проверки вы получите {task['reward']} {CURRENCY}.",
-        show_alert=True,
-    )
+
+    user_id = callback.from_user.id
+
+    if user_id in t["completed_by"]:
+        await callback.answer("Вы уже выполнили это задание.", show_alert=True)
+        return
+
+    if t["type"] in VERIFIABLE_TYPES and t.get("chat_id") is not None:
+        try:
+            member = await bot.get_chat_member(t["chat_id"], user_id)
+        except Exception:
+            await callback.answer(
+                "Не удалось проверить выполнение. Попробуйте ещё раз чуть позже.",
+                show_alert=True,
+            )
+            return
+
+        if member.status not in ("member", "administrator", "creator"):
+            action = "подпишитесь на канал" if t["type"] == "channel" else "вступите в группу"
+            await callback.answer(f"Сначала {action}, затем нажмите «Я выполнил».", show_alert=True)
+            return
+    else:
+        # Для bot/post/reactions/advanced проверка выполнения ещё не
+        # реализована — заглушка, засчитываем сразу.
+        pass
+
+    wallet.add_balance(user_id, t["reward"])
+    t["completed_by"].add(user_id)
+    t["remaining"] -= 1
+
+    await callback.answer(f"✅ Задание выполнено! Вам начислено {t['reward']} {CURRENCY}.", show_alert=True)
+
+    if t["remaining"] <= 0:
+        remove_task(t["id"])
+        try:
+            await bot.send_message(
+                t["creator_id"],
+                f"🎉 Ваше задание «{t['title']}» выполнено полностью: "
+                f"{t['quantity']}/{t['quantity']} пользователей.",
+            )
+        except Exception:
+            pass
+
+    tasks = get_active_tasks()
+    await callback.message.edit_text(tasks_list_text(tasks), reply_markup=tasks_list_kb(tasks))
